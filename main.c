@@ -228,6 +228,6 @@ int main(int argc, char *argv[]) {
     BYTES_SEQUENCE = argv[2];
 
     search_sequence(argv[1], threads_count);
-    while (all_ready(threads_count, THREADS_STATUS));
+    while (!all_ready(threads_count, THREADS_STATUS));
     stop_all(threads_count, THREADS_STATUS);
 }

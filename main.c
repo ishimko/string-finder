@@ -41,7 +41,7 @@ int find_bytes(const char *filename, const char *bytes_sequence, find_result_t *
 int wait_for_thread(int threads_count);
 
 void print_error(const char *module_name, const char *error_msg, const char *file_name) {
-    fprintf(stderr, "%s: %s %s\n", module_name, error_msg, file_name ? file_name : "");
+    fprintf(stderr, "%s: %ld: %s %s\n", module_name, syscall(SYS_gettid), error_msg, file_name ? file_name : "");
 }
 
 void print_result(const char *filename, const find_result_t find_result) {
@@ -52,7 +52,9 @@ void *worker(void *args) {
     thread_params_t *thread_params = (thread_params_t *) args;
     find_result_t find_result;
     if (find_bytes(thread_params->filename, BYTES_SEQUENCE, &find_result) != -1){
-        print_result(thread_params->filename, find_result);
+        if (find_result.entries_count != 0){
+            print_result(thread_params->filename, find_result);
+        }
     };
     *(thread_params->thread_status) = ST_FREE;
     while(*(thread_params->thread_status) != ST_NULL);

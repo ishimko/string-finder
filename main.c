@@ -6,18 +6,23 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <dirent.h>
+#include <alloca.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 
 #define ARGS_COUNT 4
-
-#define THREAD_READY 0
-#define THREAD_STOP -1
-
 #define RECURSIVE
 
+
+typedef enum {
+    ST_NULL,
+    ST_BUSY,
+    ST_FREE
+} thread_status_t;
+
 typedef struct {
-    char **thread_status;
+    thread_status_t *thread_status;
+    char *filename;
 } thread_params_t;
 
 typedef struct {
@@ -27,45 +32,28 @@ typedef struct {
 
 char *MODULE_NAME;
 char *BYTES_SEQUENCE;
-char **THREADS_STATUS;
+thread_status_t *THREADS_STATUS;
 
 int find_bytes(const char *filename, const char *bytes_sequence, find_result_t *find_result);
 
-char **wait_for_thread(int threads_count, char **threads_status);
-
-void stop_all(const int threads_count, char **threads_status);
+int wait_for_thread(int threads_count);
 
 void print_error(const char *module_name, const char *error_msg, const char *file_name) {
     fprintf(stderr, "%s: %s %s\n", module_name, error_msg, file_name ? file_name : "");
 }
 
-void print_result(const char *filename, const find_result_t *find_result) {
-    printf("%ld %s %ld %d\n", pthread_self(), filename, find_result->total_bytes, find_result->entries_count);
+void print_result(const char *filename, const find_result_t find_result) {
+    printf("%ld %s %ld %d\n", pthread_self(), filename, find_result.total_bytes, find_result.entries_count);
 }
 
 void *worker(void *args) {
-    find_result_t find_result;
-    char *filename;
-    char **thread_status;
-
     thread_params_t *thread_params = (thread_params_t *) args;
-    thread_status = thread_params->thread_status;
-    *thread_status = THREAD_READY;
-
-    while (*thread_status != THREAD_STOP) {
-        while (*thread_status == THREAD_READY);
-
-        if (*thread_status == THREAD_STOP) {
-            break;
-        }
-        filename = *thread_status;
-        if (find_bytes(filename, BYTES_SEQUENCE, &find_result) != -1){
-            print_result(filename, &find_result);
-        };
-        free(filename);
-        *thread_status = THREAD_READY;
-    }
-
+    find_result_t find_result;
+    if (find_bytes(thread_params->filename, BYTES_SEQUENCE, &find_result) != -1){
+        print_result(thread_params->filename, find_result);
+    };
+    *(thread_params->thread_status) = ST_FREE;
+    free(thread_params->filename);
     free(thread_params);
     return NULL;
 }
@@ -115,24 +103,6 @@ void file_path(char *dest, const char *const path, const char *const name) {
     strcat(dest, name);
 }
 
-int create_threads(const int threads_count, char **threads_status) {
-    pthread_t pthread;
-    pthread_attr_t pthread_attr;
-    pthread_attr_init(&pthread_attr);
-    pthread_attr_setdetachstate(&pthread_attr, PTHREAD_CREATE_DETACHED);
-    thread_params_t *thread_params;
-
-    for (int i = 0; i < threads_count; i++) {
-        thread_params = malloc(sizeof(thread_params));
-        thread_params->thread_status = threads_status + i;
-        if (pthread_create(&pthread, &pthread_attr, worker, thread_params) == -1) {
-            print_error(MODULE_NAME, strerror(errno), NULL);
-            return -1;
-        }
-    }
-    return 0;
-}
-
 void search_sequence(const char *path, const int threads_count) {
     DIR *dir_stream;
     struct dirent *dir_entry;
@@ -140,6 +110,13 @@ void search_sequence(const char *path, const int threads_count) {
         print_error(MODULE_NAME, strerror(errno), path);
         return;
     }
+
+    thread_params_t *thread_params;
+    pthread_t thread;
+
+    pthread_attr_t pthread_attr;
+    pthread_attr_init(&pthread_attr);
+    pthread_attr_setdetachstate(&pthread_attr, PTHREAD_CREATE_DETACHED);
 
     errno = 0;
     while ((dir_entry = readdir(dir_stream)) != NULL) {
@@ -163,8 +140,16 @@ void search_sequence(const char *path, const int threads_count) {
         } else {
 #endif
         if (S_ISREG(entry_info.st_mode)) {
-            char **thread_id = wait_for_thread(threads_count, THREADS_STATUS);
-            *thread_id = full_path;
+            int thread_id = wait_for_thread(threads_count);
+            THREADS_STATUS[thread_id] = ST_BUSY;
+            thread_params = malloc(sizeof(thread_params_t));
+            thread_params->thread_status = &(THREADS_STATUS[thread_id]);
+            thread_params->filename = full_path;
+            memset(&thread, 0, sizeof(pthread_t));
+            if (pthread_create(&thread, &pthread_attr, &worker, thread_params) == -1) {
+                print_error(MODULE_NAME, strerror(errno), NULL);
+                return;
+            };
         }
 #ifdef RECURSIVE
         }
@@ -180,30 +165,25 @@ void search_sequence(const char *path, const int threads_count) {
 
 }
 
-char **wait_for_thread(int threads_count, char **threads_status) {
+int wait_for_thread(int threads_count) {
     int i = 0;
-    while (threads_status[i] > 0) {
+    while (THREADS_STATUS[i] == ST_BUSY) {
         i++;
         if (i == threads_count) {
             i = 0;
         }
     }
-    return threads_status + i;
+    return i;
 }
 
-char all_ready(const int threads_count, char **threads_status){
-    for (int i = 0; i < threads_count; i++){
-        if (threads_status[i] != THREAD_READY){
+char all_finished(int threads_count) {
+    int i;
+    for (i = 0; (i < threads_count); i++){
+        if (THREADS_STATUS[i] != ST_FREE){
             return 0;
         }
     }
     return 1;
-}
-
-void stop_all(const int threads_count, char **threads_status) {
-    for (int i = 0; i < threads_count; i++){
-        threads_status[i] = (char*)THREAD_STOP;
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -220,14 +200,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    THREADS_STATUS = calloc(sizeof(char**), (size_t) threads_count);
+    THREADS_STATUS = calloc(sizeof(thread_status_t), (size_t) threads_count);
     for (int i = 0; i < threads_count; i++) {
-        THREADS_STATUS[i] = (char *)THREAD_STOP;
+        THREADS_STATUS[i] = ST_NULL;
     }
-    create_threads(threads_count, THREADS_STATUS);
     BYTES_SEQUENCE = argv[2];
 
     search_sequence(argv[1], threads_count);
-    while (!all_ready(threads_count, THREADS_STATUS));
-    stop_all(threads_count, THREADS_STATUS);
+    while (!all_finished(threads_count));
+//    while (all_finished(threads_count));
+//
+//
+//    find_result_t find_result;
+//    int result = find_bytes(argv[1], argv[2], &find_result);
+//    printf("%d %ld\n", find_result.entries_count, find_result.total_bytes);
+
 }

@@ -59,8 +59,9 @@ void *worker(void *args) {
             break;
         }
         filename = *thread_status;
-        find_bytes(filename, BYTES_SEQUENCE, &find_result);
-        print_result(filename, &find_result);
+        if (find_bytes(filename, BYTES_SEQUENCE, &find_result) != -1){
+            print_result(filename, &find_result);
+        };
         free(filename);
         *thread_status = THREAD_READY;
     }

@@ -6,14 +6,11 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <dirent.h>
-#include <alloca.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <syscall.h>
 
 #define ARGS_COUNT 4
-#define RECURSIVE
-
 
 typedef enum {
     ST_NULL,
@@ -36,7 +33,7 @@ char *BYTES_SEQUENCE;
 pthread_t *THREADS;
 thread_status_t *THREADS_STATUS;
 
-int find_bytes(const char *filename, const char *bytes_sequence, find_result_t *find_result);
+int find_bytes_in_file(const char *filename, const char *bytes_sequence, find_result_t *find_result);
 
 int wait_for_thread(int threads_count);
 
@@ -51,19 +48,24 @@ void print_result(const char *filename, const find_result_t find_result) {
 void *worker(void *args) {
     thread_params_t *thread_params = (thread_params_t *) args;
     find_result_t find_result;
-    if (find_bytes(thread_params->filename, BYTES_SEQUENCE, &find_result) != -1){
-        if (find_result.entries_count != 0){
+
+    if (find_bytes_in_file(thread_params->filename, BYTES_SEQUENCE, &find_result) != -1) {
+        if (find_result.entries_count != 0) {
             print_result(thread_params->filename, find_result);
         }
     };
+
     *(thread_params->thread_status) = ST_FREE;
-    while(*(thread_params->thread_status) != ST_NULL);
+
+    while (*(thread_params->thread_status) != ST_NULL);
+
     free(thread_params->filename);
     free(thread_params);
+
     return NULL;
 }
 
-int find_bytes(const char *filename, const char *bytes_sequence, find_result_t *find_result) {
+int find_bytes_in_file(const char *filename, const char *bytes_sequence, find_result_t *find_result) {
     int fd = open(filename, O_RDONLY);
     if (fd == -1) {
         print_error(MODULE_NAME, strerror(errno), filename);
@@ -108,7 +110,7 @@ void file_path(char *dest, const char *const path, const char *const name) {
     strcat(dest, name);
 }
 
-void search_sequence(const char *path, const int threads_count) {
+void find_bytes_in_folder(const char *path, const int threads_count) {
     DIR *dir_stream;
     struct dirent *dir_entry;
     if (!(dir_stream = opendir(path))) {
@@ -118,10 +120,6 @@ void search_sequence(const char *path, const int threads_count) {
 
     thread_params_t *thread_params;
     pthread_t thread;
-
-    pthread_attr_t pthread_attr;
-    pthread_attr_init(&pthread_attr);
-    pthread_attr_setdetachstate(&pthread_attr, PTHREAD_CREATE_JOINABLE);
 
     errno = 0;
     while ((dir_entry = readdir(dir_stream)) != NULL) {
@@ -139,29 +137,30 @@ void search_sequence(const char *path, const int threads_count) {
             continue;
         }
 
-#ifdef RECURSIVE
         if (S_ISDIR(entry_info.st_mode)) {
-            search_sequence(full_path, threads_count);
+            find_bytes_in_folder(full_path, threads_count);
         } else {
-#endif
-        if (S_ISREG(entry_info.st_mode)) {
-            int thread_id = wait_for_thread(threads_count);
-            THREADS_STATUS[thread_id] = ST_NULL;
-            pthread_join(THREADS[thread_id], NULL);
-            thread_params = malloc(sizeof(thread_params_t));
-            thread_params->thread_status = &(THREADS_STATUS[thread_id]);
-            thread_params->filename = full_path;
-            memset(&thread, 0, sizeof(pthread_t));
-            THREADS_STATUS[thread_id] = ST_BUSY;
-            if (pthread_create(&thread, &pthread_attr, &worker, thread_params) == -1) {
-                print_error(MODULE_NAME, strerror(errno), NULL);
-                return;
-            };
-            THREADS[thread_id] = thread;
+            if (S_ISREG(entry_info.st_mode)) {
+                int thread_id = wait_for_thread(threads_count);
+                THREADS_STATUS[thread_id] = ST_NULL;
+                if (pthread_join(THREADS[thread_id], NULL) == -1){
+                    print_error(MODULE_NAME, strerror(errno), NULL);
+                    return;
+                };
+
+                thread_params = malloc(sizeof(thread_params_t));
+                thread_params->thread_status = &(THREADS_STATUS[thread_id]);
+                thread_params->filename = full_path;
+
+                THREADS_STATUS[thread_id] = ST_BUSY;
+                if (pthread_create(&thread, NULL, &worker, thread_params) == -1) {
+                    print_error(MODULE_NAME, strerror(errno), NULL);
+                    return;
+                };
+
+                THREADS[thread_id] = thread;
+            }
         }
-#ifdef RECURSIVE
-        }
-#endif
     }
     if (errno) {
         print_error(MODULE_NAME, strerror(errno), path);
@@ -186,8 +185,8 @@ int wait_for_thread(int threads_count) {
 
 char all_finished(int threads_count) {
     int i;
-    for (i = 0; (i < threads_count); i++){
-        if (THREADS_STATUS[i] != ST_FREE){
+    for (i = 0; (i < threads_count); i++) {
+        if (THREADS_STATUS[i] != ST_FREE) {
             return 0;
         }
     }
@@ -213,15 +212,8 @@ int main(int argc, char *argv[]) {
         THREADS_STATUS[i] = ST_NULL;
     }
     BYTES_SEQUENCE = argv[2];
-    THREADS = calloc(sizeof(pthread_t), (size_t)threads_count);
+    THREADS = calloc(sizeof(pthread_t), (size_t) threads_count);
 
-    search_sequence(argv[1], threads_count);
+    find_bytes_in_folder(argv[1], threads_count);
     while (!all_finished(threads_count));
-//    while (all_finished(threads_count));
-//
-//
-//    find_result_t find_result;
-//    int result = find_bytes(argv[1], argv[2], &find_result);
-//    printf("%d %ld\n", find_result.entries_count, find_result.total_bytes);
-
 }

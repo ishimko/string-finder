@@ -9,6 +9,7 @@
 #include <alloca.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <syscall.h>
 
 #define ARGS_COUNT 4
 #define RECURSIVE
@@ -32,6 +33,7 @@ typedef struct {
 
 char *MODULE_NAME;
 char *BYTES_SEQUENCE;
+pthread_t *THREADS;
 thread_status_t *THREADS_STATUS;
 
 int find_bytes(const char *filename, const char *bytes_sequence, find_result_t *find_result);
@@ -43,7 +45,7 @@ void print_error(const char *module_name, const char *error_msg, const char *fil
 }
 
 void print_result(const char *filename, const find_result_t find_result) {
-    printf("%ld %s %ld %d\n", pthread_self(), filename, find_result.total_bytes, find_result.entries_count);
+    printf("%ld %s %ld %d\n", syscall(SYS_gettid), filename, find_result.total_bytes, find_result.entries_count);
 }
 
 void *worker(void *args) {
@@ -53,6 +55,7 @@ void *worker(void *args) {
         print_result(thread_params->filename, find_result);
     };
     *(thread_params->thread_status) = ST_FREE;
+    while(*(thread_params->thread_status) != ST_NULL);
     free(thread_params->filename);
     free(thread_params);
     return NULL;
@@ -116,7 +119,7 @@ void search_sequence(const char *path, const int threads_count) {
 
     pthread_attr_t pthread_attr;
     pthread_attr_init(&pthread_attr);
-    pthread_attr_setdetachstate(&pthread_attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setdetachstate(&pthread_attr, PTHREAD_CREATE_JOINABLE);
 
     errno = 0;
     while ((dir_entry = readdir(dir_stream)) != NULL) {
@@ -141,15 +144,18 @@ void search_sequence(const char *path, const int threads_count) {
 #endif
         if (S_ISREG(entry_info.st_mode)) {
             int thread_id = wait_for_thread(threads_count);
-            THREADS_STATUS[thread_id] = ST_BUSY;
+            THREADS_STATUS[thread_id] = ST_NULL;
+            pthread_join(THREADS[thread_id], NULL);
             thread_params = malloc(sizeof(thread_params_t));
             thread_params->thread_status = &(THREADS_STATUS[thread_id]);
             thread_params->filename = full_path;
             memset(&thread, 0, sizeof(pthread_t));
+            THREADS_STATUS[thread_id] = ST_BUSY;
             if (pthread_create(&thread, &pthread_attr, &worker, thread_params) == -1) {
                 print_error(MODULE_NAME, strerror(errno), NULL);
                 return;
             };
+            THREADS[thread_id] = thread;
         }
 #ifdef RECURSIVE
         }
@@ -205,6 +211,7 @@ int main(int argc, char *argv[]) {
         THREADS_STATUS[i] = ST_NULL;
     }
     BYTES_SEQUENCE = argv[2];
+    THREADS = calloc(sizeof(pthread_t), (size_t)threads_count);
 
     search_sequence(argv[1], threads_count);
     while (!all_finished(threads_count));
